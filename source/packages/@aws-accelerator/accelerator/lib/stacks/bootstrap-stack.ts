@@ -65,7 +65,17 @@ export class BootstrapStack extends AcceleratorStack {
     if (managementDeploymentRole) {
       deploymentRoles.push(managementDeploymentRole);
     }
-    const deploymentRoleNames = deploymentRoles.map(role => role.roleName);
+    // Compatibility shims: an account previously bootstrapped with CDK's own plain default
+    // template has five separately-named roles (CloudFormationExecutionRole,
+    // DeploymentActionRole, FilePublishingRole, ImagePublishingRole, LookupRole) that this
+    // custom template has no knowledge of. Since they carry no removal policy, the moment an
+    // account transitions onto this template, CloudFormation deletes them. Recreating them
+    // here under the same logical ID and role name makes that transition purely additive
+    // instead, nothing pre-existing is ever removed. These are a deliberate temporary bridge:
+    // remove this call (and redeploy) once every account has transitioned and been confirmed
+    // stable, to prune them back out.
+    const legacyBootstrapRoleShims = this.createLegacyBootstrapRoleShims();
+    const deploymentRoleNames = [...deploymentRoles, ...legacyBootstrapRoleShims].map(role => role.roleName);
     // Create S3 KMS key and bucket
     const centralizeBuckets = this.props.globalConfig.cdkOptions.centralizeBuckets;
     const shouldCreateBucket = !centralizeBuckets || (centralizeBuckets && this.account === this.managementAccount);
@@ -178,6 +188,49 @@ export class BootstrapStack extends AcceleratorStack {
       },
     ]);
     return managementDeploymentRole;
+  }
+
+  /**
+   * Creates one role per name/logicalId pair under CDK's own plain default bootstrap
+   * role-naming convention (cdk-<qualifier>-<name>-role-<account>-<region>), so that an
+   * account currently on that default template doesn't lose these roles when this custom
+   * template is applied. Broad AdministratorAccess permissions, matching
+   * CustomDeploymentRole/ManagementDeploymentRole above, deliberately not a byte-for-byte
+   * replica of CDK's own narrower default permissions for each role: these are a temporary
+   * bridge meant to be pruned once every account has transitioned and been confirmed
+   * stable, not a permanent fixture.
+   */
+  createLegacyBootstrapRoleShims(): cdk.aws_iam.Role[] {
+    const shims: { logicalId: string; nameSuffix: string }[] = [
+      { logicalId: 'CloudFormationExecutionRole', nameSuffix: 'cfn-exec-role' },
+      { logicalId: 'DeploymentActionRole', nameSuffix: 'deploy-role' },
+      { logicalId: 'FilePublishingRole', nameSuffix: 'file-publishing-role' },
+      { logicalId: 'ImagePublishingRole', nameSuffix: 'image-publishing-role' },
+      { logicalId: 'LookupRole', nameSuffix: 'lookup-role' },
+    ];
+
+    return shims.map(({ logicalId, nameSuffix }) => {
+      const roleName = `cdk-${this.qualifier}-${nameSuffix}-${cdk.Stack.of(this).account}-${cdk.Stack.of(this).region}`;
+      const role = new cdk.aws_iam.Role(this, logicalId, {
+        assumedBy: this.setCompositePrincipals({
+          managementAccount: this.managementAccount,
+          cfnServicePrincipal: true,
+        }),
+        roleName,
+      });
+      this.setAssumeSelfPermissions(role, roleName);
+      role.addManagedPolicy(cdk.aws_iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess'));
+      const cfnRole = role.node.defaultChild as cdk.aws_iam.CfnRole;
+      cfnRole.overrideLogicalId(logicalId);
+      // AwsSolutions-IAM4: The IAM user, role, or group uses AWS managed policies
+      NagSuppressions.addResourceSuppressionsByPath(this, `${this.stackName}/${logicalId}/Resource`, [
+        {
+          id: 'AwsSolutions-IAM4',
+          reason: 'Temporary compatibility shim for CDK\'s own default bootstrap role naming; AdministratorAccess matches the other bootstrap roles in this stack.',
+        },
+      ]);
+      return role;
+    });
   }
 
   createBucketCmk(props: { accountId: string; deploymentRoles: string[] }) {
