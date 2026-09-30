@@ -248,4 +248,36 @@ describe('AcceleratorToolkit', () => {
       expect(Toolkit).toHaveBeenCalled();
     });
   });
+
+  describe('getDeploymentRole', () => {
+    const baseProps = {
+      stackPrefix: 'AWSAccelerator',
+      accountId: '222222222222',
+      managementAccountId: '111111111111',
+    };
+
+    it('always uses the Management-Deployment-Role for management-account stages', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (AcceleratorToolkit as any).getDeploymentRole({ ...baseProps, stage: 'prepare' });
+      expect(result).toBe('AWSAccelerator-Management-Deployment-Role');
+    });
+
+    it('returns undefined for non-management stages when no customDeploymentRoleName is set', () => {
+      // No cdkOptions flag or override resolved a role name: nothing guarantees a named deployment
+      // role exists in this account, so no roleArn should be forced onto the deploy call.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (AcceleratorToolkit as any).getDeploymentRole({ ...baseProps, stage: 'logging' });
+      expect(result).toBeUndefined();
+    });
+
+    it('uses the explicit customDeploymentRoleName for non-management stages when set', () => {
+      const result = (AcceleratorToolkit as any).getDeploymentRole({
+        ...baseProps,
+        stage: 'logging',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        customDeploymentRoleName: 'MyCustomRole',
+      } as any);
+      expect(result).toBe('MyCustomRole');
+    });
+  });
 });

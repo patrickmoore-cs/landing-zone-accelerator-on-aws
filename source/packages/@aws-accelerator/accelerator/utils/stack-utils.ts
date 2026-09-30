@@ -63,7 +63,7 @@ const logger = createLogger(['stack-utils']);
  * @param region
  * @returns
  */
-function getStackSynthesizer(
+export function getStackSynthesizer(
   props: AcceleratorStackProps,
   accountId: string,
   region: string,
@@ -75,9 +75,38 @@ function getStackSynthesizer(
   const fileAssetBucketName = centralizeBuckets ? `cdk-accel-assets-${managementAccountId}-${region}` : undefined;
   const bucketPrefix = centralizeBuckets ? `${accountId}/` : undefined;
   if (!deploymentRoleName) {
-    deploymentRoleName =
-      props.globalConfig.cdkOptions?.customDeploymentRole ?? `${props.prefixes.accelerator}-Deployment-Role`;
+    deploymentRoleName = props.globalConfig.cdkOptions?.customDeploymentRole;
   }
+
+  if (!deploymentRoleName && props.globalConfig.cdkOptions?.useManagementAccessRole) {
+    logger.info(`Stack in account ${accountId} and region ${region} using CliCredentialsStackSynthesizer`);
+    return new cdk.CliCredentialsStackSynthesizer({
+      bucketPrefix,
+      fileAssetsBucketName: fileAssetBucketName,
+    });
+  }
+
+  if (!deploymentRoleName && accountId === managementAccountId) {
+    // The Installer's own bootstrap-management.sh always applies the custom bootstrap template to
+    // the management account specifically, unconditionally, regardless of any cdkOptions flag, so
+    // `${prefix}-Deployment-Role` always exists there even when every other account is left on CDK's
+    // plain default bootstrap template.
+    deploymentRoleName = `${props.prefixes.accelerator}-Deployment-Role`;
+  }
+
+  if (!deploymentRoleName) {
+    // No cdkOptions flag or override resolved a role name, so nothing guarantees a named deployment
+    // role exists in this account (regression introduced in 6636b6664 / v1.14.0): fall back to CDK's
+    // own default bootstrap execution role instead of forcing `${prefix}-Deployment-Role`.
+    logger.info(`Stack in account ${accountId} and region ${region} using DefaultStackSynthesizer defaults`);
+    return new cdk.DefaultStackSynthesizer({
+      generateBootstrapVersionRule: false,
+      bucketPrefix,
+      fileAssetsBucketName: fileAssetBucketName,
+      qualifier: 'accel',
+    });
+  }
+
   logger.info(`Stack in account ${accountId} and region ${region} using deployment role ${deploymentRoleName}`);
   const deploymentRoleArn = `arn:${props.partition}:iam::${accountId}:role/${deploymentRoleName}`;
 
